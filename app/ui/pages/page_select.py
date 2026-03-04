@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class SelectFolderPage(QWidget):
     """Page for selecting input and output folders."""
 
-    scan_requested = pyqtSignal(Path, Path, bool)  # input_folder, output_folder, move_files
+    scan_requested = pyqtSignal(Path, Path, bool, bool)  # input, output, move, incremental
 
     def __init__(self):
         """Initialize folder selection page."""
@@ -84,6 +84,20 @@ class SelectFolderPage(QWidget):
         self.move_checkbox.setChecked(False)
         layout.addWidget(self.move_checkbox)
 
+        self.force_full_checkbox = QCheckBox("Force full re-scan (ignore previous data)")
+        self.force_full_checkbox.setChecked(False)
+        self.force_full_checkbox.setVisible(False)
+        layout.addWidget(self.force_full_checkbox)
+
+        # Incremental info label
+        self.incremental_info = QLabel("")
+        self.incremental_info.setStyleSheet(
+            "color: #1565C0; background-color: #E3F2FD; padding: 8px; border-radius: 4px;"
+        )
+        self.incremental_info.setWordWrap(True)
+        self.incremental_info.setVisible(False)
+        layout.addWidget(self.incremental_info)
+
         layout.addSpacing(20)
 
         # Buttons
@@ -117,6 +131,28 @@ class SelectFolderPage(QWidget):
         self.input_path.dragEnterEvent = self._on_drag_enter
         self.input_path.dropEvent = self._on_drop
 
+    def _check_registry(self, folder: Path) -> None:
+        """Check if incremental data exists for this folder."""
+        try:
+            from app.storage.session_store import FaceRegistry
+            registry = FaceRegistry()
+            folder_str = str(folder)
+            if registry.has_registry_data(folder_str):
+                stats = registry.get_registry_stats(folder_str)
+                self.incremental_info.setText(
+                    f"Previous scan data found: {stats['processed_files']} files processed, "
+                    f"{stats['known_persons']} persons known. New photos only will be scanned."
+                )
+                self.incremental_info.setVisible(True)
+                self.force_full_checkbox.setVisible(True)
+            else:
+                self.incremental_info.setVisible(False)
+                self.force_full_checkbox.setVisible(False)
+        except Exception as e:
+            logger.debug(f"Registry check failed: {e}")
+            self.incremental_info.setVisible(False)
+            self.force_full_checkbox.setVisible(False)
+
     def _on_input_browse(self) -> None:
         """Browse for input folder."""
         folder = QFileDialog.getExistingDirectory(
@@ -125,9 +161,9 @@ class SelectFolderPage(QWidget):
         if folder:
             self.input_folder = Path(folder)
             self.input_path.setText(str(self.input_folder))
-            # Auto-set output folder if not set
             if not self.output_folder:
                 self.output_folder = self.input_folder
+            self._check_registry(self.input_folder)
 
     def _on_output_browse(self) -> None:
         """Browse for output folder."""
@@ -153,6 +189,7 @@ class SelectFolderPage(QWidget):
                 self.input_path.setText(str(self.input_folder))
                 if not self.output_folder:
                     self.output_folder = self.input_folder
+                self._check_registry(self.input_folder)
                 event.acceptProposedAction()
 
     def _on_scan(self) -> None:
@@ -180,8 +217,16 @@ class SelectFolderPage(QWidget):
             if reply == QMessageBox.StandardButton.No:
                 return
 
-        logger.info(f"Starting scan: {self.input_folder} -> {output}")
-        self.scan_requested.emit(self.input_folder, output, self.move_checkbox.isChecked())
+        # Determine incremental mode
+        incremental = (
+            self.incremental_info.isVisible()
+            and not self.force_full_checkbox.isChecked()
+        )
+
+        logger.info(f"Starting scan: {self.input_folder} -> {output} (incremental={incremental})")
+        self.scan_requested.emit(
+            self.input_folder, output, self.move_checkbox.isChecked(), incremental
+        )
 
     def reset(self) -> None:
         """Reset the page for a new scan."""
@@ -190,3 +235,6 @@ class SelectFolderPage(QWidget):
         self.input_path.clear()
         self.output_path.clear()
         self.move_checkbox.setChecked(False)
+        self.force_full_checkbox.setChecked(False)
+        self.force_full_checkbox.setVisible(False)
+        self.incremental_info.setVisible(False)

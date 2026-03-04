@@ -14,8 +14,9 @@ from app.config import (
     HDBSCAN_MIN_CLUSTER_SIZE,
     HDBSCAN_CLUSTER_SELECTION_METHOD,
     CHINESE_WHISPERS_THRESHOLD,
+    PERSON_MATCH_THRESHOLD,
 )
-from app.core.models import FaceRecord, Cluster
+from app.core.models import FaceRecord, Cluster, KnownPerson, PersonMatch
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,43 @@ class FaceClusterer:
         self.cw_threshold = cw_threshold
         self.umap_model = None
         self.hdbscan_model = None
+
+    def match_against_known_persons(
+        self,
+        new_faces: list[FaceRecord],
+        known_persons: list[KnownPerson],
+        threshold: float = PERSON_MATCH_THRESHOLD,
+    ) -> tuple[list[PersonMatch], list[FaceRecord]]:
+        """Match new faces against known person embeddings.
+
+        Uses vectorized dot product (embeddings are L2-normalized).
+
+        Returns:
+            (matched, unmatched) — matched PersonMatch list and unmatched faces
+        """
+        if not new_faces or not known_persons:
+            return [], list(new_faces)
+
+        person_embs = np.array([p.representative_embedding for p in known_persons])
+        matched = []
+        unmatched = []
+
+        for face in new_faces:
+            sims = person_embs @ face.embedding  # dot product = cosine (L2-normed)
+            best_idx = int(np.argmax(sims))
+            best_sim = float(sims[best_idx])
+
+            if best_sim >= threshold:
+                matched.append(PersonMatch(
+                    face_record=face,
+                    person=known_persons[best_idx],
+                    similarity=best_sim,
+                ))
+            else:
+                unmatched.append(face)
+
+        logger.info(f"Person matching: {len(matched)} matched, {len(unmatched)} unmatched")
+        return matched, unmatched
 
     def cluster(self, faces: list[FaceRecord]) -> list[Cluster]:
         """Cluster faces by embedding similarity.

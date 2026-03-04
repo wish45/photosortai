@@ -1,13 +1,32 @@
 """Scanner for finding and validating image files."""
 
+import hashlib
+import struct
 from pathlib import Path
 from typing import Generator, Optional
 import logging
 from PIL import Image
 
-from app.config import SUPPORTED_FORMATS
+from app.config import SUPPORTED_FORMATS, FILE_HASH_CHUNK_SIZE
 
 logger = logging.getLogger(__name__)
+
+
+class FileHasher:
+    """Computes content-based hashes for duplicate detection."""
+
+    @staticmethod
+    def compute_hash(file_path: Path) -> str:
+        """SHA-256 of (file_size as 8 bytes + first 8KB).
+
+        Detects content changes while ignoring renames.
+        """
+        size = file_path.stat().st_size
+        h = hashlib.sha256()
+        h.update(struct.pack("<Q", size))
+        with open(file_path, "rb") as f:
+            h.update(f.read(FILE_HASH_CHUNK_SIZE))
+        return h.hexdigest()
 
 
 class ImageScanner:
@@ -86,6 +105,33 @@ class ImageScanner:
                 yield img_path
             else:
                 logger.debug(f"Skipping invalid image: {img_path}")
+
+    def find_new_images(
+        self, folder: Path, known_hashes: set[str]
+    ) -> tuple[list[Path], int, dict[Path, str]]:
+        """Filter images, returning only those not in known_hashes.
+
+        Returns:
+            (new_images, skipped_count, hash_map) where hash_map maps path -> hash
+        """
+        all_images = self.find_images(folder)
+        new_images = []
+        skipped = 0
+        hash_map = {}
+
+        for img_path in all_images:
+            try:
+                file_hash = FileHasher.compute_hash(img_path)
+                hash_map[img_path] = file_hash
+                if file_hash in known_hashes:
+                    skipped += 1
+                else:
+                    new_images.append(img_path)
+            except Exception as e:
+                logger.warning(f"Hash error for {img_path}: {e}")
+                new_images.append(img_path)
+
+        return new_images, skipped, hash_map
 
     def count_images(self, folder: Path) -> int:
         """Count total valid images in folder.

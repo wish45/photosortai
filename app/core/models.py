@@ -93,3 +93,34 @@ class ScanResult:
             if cluster.cluster_id == cluster_id:
                 return cluster
         return None
+
+
+@dataclass
+class KnownPerson:
+    """A previously identified person stored in the registry."""
+
+    person_id: int
+    label: str
+    representative_embedding: np.ndarray  # Average of all face embeddings
+    face_count: int = 0
+
+
+@dataclass
+class PersonMatch:
+    """A face matched to a known person."""
+
+    face_record: FaceRecord
+    person: KnownPerson
+    similarity: float
+
+
+@dataclass
+class IncrementalScanResult(ScanResult):
+    """Extended scan result for incremental mode."""
+
+    total_files_in_folder: int = 0
+    skipped_already_processed: int = 0
+    new_photos_scanned: int = 0
+    person_matches: list[PersonMatch] = field(default_factory=list)
+    is_incremental: bool = False
+    hash_map: dict = field(default_factory=dict)  # path -> hash for DB registration

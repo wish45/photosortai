@@ -59,6 +59,12 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # Unused insightface submodules with broken Cython deps
+        'insightface.thirdparty.face3d',
+        'insightface.thirdparty.face3d.mesh',
+        'insightface.thirdparty.face3d.mesh.cython',
+        'insightface.thirdparty.face3d.mesh.cython.mesh_core_cython',
+        # Unused heavy packages
         'tkinter',
         'matplotlib',
         'IPython',

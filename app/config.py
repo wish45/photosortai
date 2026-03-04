@@ -17,6 +17,8 @@ UMAP_METRIC = "cosine"
 HDBSCAN_MIN_CLUSTER_SIZE = 2
 HDBSCAN_CLUSTER_SELECTION_METHOD = "eom"
 CHINESE_WHISPERS_THRESHOLD = 0.45
+PERSON_MATCH_THRESHOLD = 0.55  # Known person matching (stricter than CW)
+FILE_HASH_CHUNK_SIZE = 8192  # Hash: first 8KB + file size
 
 # File operations
 DEFAULT_OUTPUT_MODE = "copy"  # "copy" or "move"

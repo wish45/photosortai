@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import UNSORTED_FOLDER_NAME, DUPLICATE_SUFFIX_PATTERN
-from app.core.models import Cluster, ScanResult, FaceRecord
+from app.core.models import Cluster, ScanResult, IncrementalScanResult, FaceRecord
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,15 @@ class PhotoOrganizer:
         if not scan_result.output_folder.exists():
             scan_result.output_folder.mkdir(parents=True, exist_ok=True)
 
-        # Build mapping of photo path -> set of person names
+        # Add person_matches (from incremental mode) to mapping
         photo_to_persons = self._build_photo_to_persons_mapping(scan_result)
+
+        if isinstance(scan_result, IncrementalScanResult):
+            for pm in scan_result.person_matches:
+                p = pm.face_record.photo_path
+                if p not in photo_to_persons:
+                    photo_to_persons[p] = set()
+                photo_to_persons[p].add(pm.person.label)
 
         # Create folders and organize files
         result = {}

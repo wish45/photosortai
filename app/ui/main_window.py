@@ -80,23 +80,16 @@ class MainWindow(QMainWindow):
         self.page_done.open_folder_clicked.connect(self._on_open_output_folder)
 
     def _on_scan_requested(
-        self, input_folder: Path, output_folder: Path, move_files: bool
+        self, input_folder: Path, output_folder: Path, move_files: bool, incremental: bool = False
     ) -> None:
-        """Handle scan request from select page.
-
-        Args:
-            input_folder: Folder with photos
-            output_folder: Output folder
-            move_files: Whether to move or copy files
-        """
+        """Handle scan request from select page."""
         self.scan_result = ScanResult(
             input_folder=input_folder,
             output_folder=output_folder,
         )
         self.move_files = move_files
 
-        # Start processing page
-        self.page_processing.start_scan(input_folder, output_folder)
+        self.page_processing.start_scan(input_folder, output_folder, incremental=incremental)
         self.stacked.setCurrentIndex(self.PAGE_PROCESSING)
 
     def _on_scan_complete(self, scan_result: ScanResult) -> None:

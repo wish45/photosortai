@@ -10,7 +10,7 @@ from typing import Optional
 import numpy as np
 
 from app.config import DB_FILENAME
-from app.core.models import FaceRecord, Cluster, ScanResult
+from app.core.models import FaceRecord, Cluster, ScanResult, KnownPerson
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ class SessionStore:
                 faces_dict = {}
                 for row in cursor.fetchall():
                     face_id, photo_path, bbox_json, embedding_bytes, thumbnail_path, cluster_id = row
-                    embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
+                    embedding = np.frombuffer(embedding_bytes, dtype=np.float32).copy()
                     bbox = tuple(json.loads(bbox_json))
 
                     face = FaceRecord(
@@ -361,3 +361,178 @@ class SessionStore:
         except sqlite3.Error as e:
             logger.error(f"Failed to delete scan result: {e}")
             return False
+
+
+class FaceRegistry:
+    """Persistent registry for incremental face scanning."""
+
+    def __init__(self, db_path: Optional[Path] = None):
+        if db_path is None:
+            db_path = Path.home() / ".photosortai" / DB_FILENAME
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_registry_tables()
+
+    def _init_registry_tables(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS processed_files (
+                    file_hash TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    file_size INTEGER,
+                    input_folder TEXT NOT NULL,
+                    processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(file_hash, input_folder)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS known_persons (
+                    id INTEGER PRIMARY KEY,
+                    label TEXT UNIQUE NOT NULL,
+                    representative_embedding BLOB NOT NULL,
+                    face_count INTEGER DEFAULT 0
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS known_faces (
+                    id TEXT PRIMARY KEY,
+                    person_id INTEGER NOT NULL,
+                    file_hash TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    bbox TEXT,
+                    photo_path TEXT,
+                    FOREIGN KEY (person_id) REFERENCES known_persons(id)
+                )
+            """)
+            conn.commit()
+
+    # ── Query methods ──
+
+    def get_processed_hashes(self, input_folder: str) -> set[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT file_hash FROM processed_files WHERE input_folder = ?",
+                (input_folder,),
+            )
+            return {row[0] for row in cur.fetchall()}
+
+    def get_known_persons(self) -> list[KnownPerson]:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, label, representative_embedding, face_count FROM known_persons")
+            result = []
+            for row in cur.fetchall():
+                pid, label, emb_bytes, fc = row
+                emb = np.frombuffer(emb_bytes, dtype=np.float32).copy()
+                result.append(KnownPerson(person_id=pid, label=label,
+                                          representative_embedding=emb, face_count=fc))
+            return result
+
+    def get_person_by_label(self, label: str) -> Optional[KnownPerson]:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, label, representative_embedding, face_count FROM known_persons WHERE label = ?",
+                (label,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            pid, lbl, emb_bytes, fc = row
+            emb = np.frombuffer(emb_bytes, dtype=np.float32).copy()
+            return KnownPerson(person_id=pid, label=lbl,
+                               representative_embedding=emb, face_count=fc)
+
+    def has_registry_data(self, input_folder: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM processed_files WHERE input_folder = ?",
+                (input_folder,),
+            )
+            return cur.fetchone()[0] > 0
+
+    def get_registry_stats(self, input_folder: str) -> dict:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM processed_files WHERE input_folder = ?",
+                (input_folder,),
+            )
+            files = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM known_persons")
+            persons = cur.fetchone()[0]
+            return {"processed_files": files, "known_persons": persons}
+
+    # ── Registration methods ──
+
+    def register_processed_file(
+        self, file_hash: str, file_path: str, file_size: int, input_folder: str
+    ) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO processed_files (file_hash, file_path, file_size, input_folder) "
+                "VALUES (?, ?, ?, ?)",
+                (file_hash, file_path, file_size, input_folder),
+            )
+            conn.commit()
+
+    def register_known_person(self, label: str, embeddings: list[np.ndarray]) -> int:
+        mean_emb = np.mean(embeddings, axis=0).astype(np.float32)
+        norm = np.linalg.norm(mean_emb)
+        if norm > 0:
+            mean_emb /= norm
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO known_persons (label, representative_embedding, face_count) VALUES (?, ?, ?)",
+                (label, mean_emb.tobytes(), len(embeddings)),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def update_known_person_embedding(self, person_id: int, new_embeddings: list[np.ndarray]) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT representative_embedding, face_count FROM known_persons WHERE id = ?",
+                (person_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return
+            old_emb = np.frombuffer(row[0], dtype=np.float32).copy()
+            old_count = row[1]
+
+            # Weighted average of old and new embeddings
+            new_mean = np.mean(new_embeddings, axis=0).astype(np.float32)
+            total = old_count + len(new_embeddings)
+            combined = (old_emb * old_count + new_mean * len(new_embeddings)) / total
+            norm = np.linalg.norm(combined)
+            if norm > 0:
+                combined /= norm
+
+            cur.execute(
+                "UPDATE known_persons SET representative_embedding = ?, face_count = ? WHERE id = ?",
+                (combined.astype(np.float32).tobytes(), total, person_id),
+            )
+            conn.commit()
+
+    def register_known_face(self, face: "FaceRecord", person_id: int, file_hash: str) -> None:
+        import json
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO known_faces (id, person_id, file_hash, embedding, bbox, photo_path) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    face.face_id,
+                    person_id,
+                    file_hash,
+                    face.embedding.tobytes(),
+                    json.dumps(list(face.bbox)),
+                    str(face.photo_path),
+                ),
+            )
+            conn.commit()

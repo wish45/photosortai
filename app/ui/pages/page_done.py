@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 
-from app.core.models import ScanResult
+from app.core.models import ScanResult, IncrementalScanResult
 from app.workers.organize_worker import OrganizeWorker
 
 logger = logging.getLogger(__name__)
@@ -146,17 +146,32 @@ class DonePage(QWidget):
 
         # Generate summary
         labeled_clusters = sum(1 for c in self.scan_result.clusters if c.label)
-        total_photos = self.scan_result.total_photos
         photos_organized = sum(len(paths) for paths in result.values())
 
-        summary = f"""
-        <b>Organization Summary</b><br><br>
-        Total photos scanned: <b>{total_photos}</b><br>
-        Photos with detected faces: <b>{self.scan_result.photos_with_faces}</b><br>
-        Person clusters created: <b>{labeled_clusters}</b><br>
-        Photos organized: <b>{photos_organized}</b><br><br>
-        <b>Output folder:</b> {self.scan_result.output_folder}
-        """
+        if isinstance(self.scan_result, IncrementalScanResult) and self.scan_result.is_incremental:
+            sr = self.scan_result
+            auto_matched = len(sr.person_matches)
+            summary = f"""
+            <b>Incremental Scan Summary</b><br><br>
+            Total files in folder: <b>{sr.total_files_in_folder}</b><br>
+            Already processed (skipped): <b>{sr.skipped_already_processed}</b><br>
+            New photos scanned: <b>{sr.new_photos_scanned}</b><br>
+            Photos with faces: <b>{sr.photos_with_faces}</b><br>
+            Auto-matched to known persons: <b>{auto_matched}</b><br>
+            New clusters: <b>{labeled_clusters}</b><br>
+            Photos organized: <b>{photos_organized}</b><br><br>
+            <b>Output folder:</b> {sr.output_folder}
+            """
+        else:
+            total_photos = self.scan_result.total_photos
+            summary = f"""
+            <b>Organization Summary</b><br><br>
+            Total photos scanned: <b>{total_photos}</b><br>
+            Photos with detected faces: <b>{self.scan_result.photos_with_faces}</b><br>
+            Person clusters created: <b>{labeled_clusters}</b><br>
+            Photos organized: <b>{photos_organized}</b><br><br>
+            <b>Output folder:</b> {self.scan_result.output_folder}
+            """
 
         self.summary_label.setText(summary)
         self.status_label.setText("Done!")

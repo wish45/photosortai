@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QFont, QPixmap
 
-from app.core.models import ScanResult, Cluster
+from app.core.models import ScanResult, IncrementalScanResult, Cluster, PersonMatch
 
 logger = logging.getLogger(__name__)
 
@@ -108,25 +108,111 @@ class ReviewPage(QWidget):
         self._display_clusters()
 
     def _display_clusters(self) -> None:
-        """Display cluster cards."""
+        """Display cluster cards, with auto-matched section for incremental mode."""
         # Clear existing
         for widget in self.cluster_widgets:
             self.scroll_layout.removeWidget(widget)
             widget.deleteLater()
         self.cluster_widgets.clear()
 
-        if not self.scan_result or not self.scan_result.clusters:
+        # Show auto-matched persons (incremental mode)
+        if isinstance(self.scan_result, IncrementalScanResult) and self.scan_result.person_matches:
+            self._display_auto_matched_section()
+
+        has_clusters = self.scan_result and self.scan_result.clusters
+        has_matches = (
+            isinstance(self.scan_result, IncrementalScanResult)
+            and self.scan_result.person_matches
+        )
+
+        if not has_clusters and not has_matches:
             no_clusters = QLabel("No clusters found")
             self.scroll_layout.addWidget(no_clusters)
             return
 
-        # Create cluster cards
-        for cluster in self.scan_result.clusters:
-            card = self._create_cluster_card(cluster)
+        # New clusters section header
+        if has_clusters and has_matches:
+            header = QLabel("New Clusters (name required)")
+            header.setFont(QFont("Arial", 13, QFont.Weight.Bold))
+            header.setStyleSheet("color: #E65100; margin-top: 10px;")
+            self.scroll_layout.addWidget(header)
+            self.cluster_widgets.append(header)
+
+        if has_clusters:
+            for cluster in self.scan_result.clusters:
+                card = self._create_cluster_card(cluster)
+                self.scroll_layout.addWidget(card)
+                self.cluster_widgets.append(card)
+
+        self.scroll_layout.addStretch()
+
+    def _display_auto_matched_section(self) -> None:
+        """Display auto-matched persons as read-only cards."""
+        header = QLabel("Auto-matched Persons")
+        header.setFont(QFont("Arial", 13, QFont.Weight.Bold))
+        header.setStyleSheet("color: #1565C0; margin-bottom: 5px;")
+        self.scroll_layout.addWidget(header)
+        self.cluster_widgets.append(header)
+
+        # Group matches by person
+        person_groups: dict[int, list[PersonMatch]] = {}
+        for pm in self.scan_result.person_matches:
+            pid = pm.person.person_id
+            if pid not in person_groups:
+                person_groups[pid] = []
+            person_groups[pid].append(pm)
+
+        for pid, matches in person_groups.items():
+            label = matches[0].person.label
+            avg_sim = sum(m.similarity for m in matches) / len(matches)
+            card = self._create_match_card(label, matches, avg_sim)
             self.scroll_layout.addWidget(card)
             self.cluster_widgets.append(card)
 
-        self.scroll_layout.addStretch()
+    def _create_match_card(
+        self, label: str, matches: list[PersonMatch], avg_sim: float
+    ) -> QFrame:
+        """Create a read-only card for auto-matched person."""
+        card = QFrame()
+        card.setStyleSheet(
+            "QFrame { border: 1px solid #90CAF9; border-radius: 4px; "
+            "padding: 10px; background-color: #E3F2FD; }"
+        )
+        layout = QVBoxLayout(card)
+
+        header = QLabel(
+            f'"{label}" — {len(matches)} new photos (avg confidence: {avg_sim:.0%})'
+        )
+        header.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        layout.addWidget(header)
+
+        # Thumbnails
+        thumb_layout = QHBoxLayout()
+        thumb_layout.setSpacing(5)
+        for pm in matches[:6]:
+            face = pm.face_record
+            if face.thumbnail_path and face.thumbnail_path.exists():
+                thumb = QPixmap(str(face.thumbnail_path))
+                if not thumb.isNull():
+                    thumb = thumb.scaledToHeight(
+                        80, Qt.TransformationMode.SmoothTransformation
+                    )
+                    lbl = QLabel()
+                    lbl.setPixmap(thumb)
+                    lbl.setStyleSheet("border: 1px solid #64B5F6; border-radius: 4px;")
+                    thumb_layout.addWidget(lbl)
+        if len(matches) > 6:
+            more = QLabel(f"+{len(matches) - 6} more")
+            more.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            more.setStyleSheet(
+                "border: 1px solid #64B5F6; border-radius: 4px; "
+                "background-color: #BBDEFB; min-width: 80px;"
+            )
+            thumb_layout.addWidget(more)
+        thumb_layout.addStretch()
+        layout.addLayout(thumb_layout)
+
+        return card
 
     def _create_cluster_card(self, cluster: Cluster) -> QFrame:
         """Create a cluster card widget.
@@ -225,10 +311,13 @@ class ReviewPage(QWidget):
 
     def _on_organize(self) -> None:
         """Handle organize button."""
-        # Validate that at least some clusters have labels
         labeled = sum(1 for c in self.scan_result.clusters if c.label)
+        has_auto_matches = (
+            isinstance(self.scan_result, IncrementalScanResult)
+            and len(self.scan_result.person_matches) > 0
+        )
 
-        if labeled == 0:
+        if labeled == 0 and not has_auto_matches:
             reply = QMessageBox.question(
                 self,
                 "No names entered",

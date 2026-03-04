@@ -8,6 +8,10 @@ from typing import Optional
 
 import cv2
 import numpy as np
+
+# Patch broken Cython extensions before importing insightface
+import app.core._insightface_patch  # noqa: F401
+
 from insightface.app import FaceAnalysis
 from PIL import Image
 

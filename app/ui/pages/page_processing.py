@@ -85,22 +85,18 @@ class ProcessingPage(QWidget):
 
         layout.addLayout(button_layout)
 
-    def start_scan(self, input_folder: Path, output_folder: Path) -> None:
-        """Start the scan process.
-
-        Args:
-            input_folder: Folder with photos
-            output_folder: Output folder
-        """
-        logger.debug(f"Starting scan: {input_folder}")
+    def start_scan(
+        self, input_folder: Path, output_folder: Path, incremental: bool = False
+    ) -> None:
+        """Start the scan process."""
+        logger.debug(f"Starting scan: {input_folder} (incremental={incremental})")
 
         self.progress_bar.setValue(0)
         self.status_label.setText("Initializing...")
         self.current_thumbnails.clear()
         self._clear_thumbnails()
 
-        # Create and start worker
-        self.worker = ScanWorker(input_folder, output_folder)
+        self.worker = ScanWorker(input_folder, output_folder, incremental=incremental)
         self.worker.progress.connect(self._on_progress)
         self.worker.status.connect(self._on_status)
         self.worker.face_detected.connect(self._on_face_detected)
