@@ -8,7 +8,7 @@ from pathlib import Path
 block_cipher = None
 
 # InsightFace 모델 경로 — CI에서는 프로젝트 내 insightface_models/, 로컬은 ~/.insightface
-_local_models = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'insightface_models')
+_local_models = os.path.join(SPECPATH, 'insightface_models')
 insightface_models = _local_models if os.path.isdir(_local_models) else os.path.join(Path.home(), '.insightface')
 
 a = Analysis(
