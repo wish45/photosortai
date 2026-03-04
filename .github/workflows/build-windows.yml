@@ -65,11 +65,87 @@ jobs:
           for f in os.listdir(model_dir):
               print(f"  {f}")
 
+      - name: Download VC++ Redistributable
+        shell: powershell
+        run: |
+          $url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+          $out = "vc_redist.x64.exe"
+          Write-Host "Downloading VC++ Redistributable..."
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          Write-Host "Downloaded: $((Get-Item $out).Length / 1MB) MB"
+
       - name: Build with PyInstaller
         run: |
           pyinstaller photosortai_win.spec --noconfirm
           echo "Build output:"
           dir dist\PhotoSorterAI
+
+      - name: Verify critical DLLs in build
+        shell: python
+        run: |
+          import os, sys
+
+          dist_dir = os.path.join("dist", "PhotoSorterAI")
+
+          critical_dlls = [
+              'msvcp140.dll',
+              'vcruntime140.dll',
+              'vcruntime140_1.dll',
+              'python311.dll',
+          ]
+
+          important_dlls = [
+              'concrt140.dll',
+              'msvcp140_1.dll',
+          ]
+
+          print("=== Critical DLL Check ===")
+          missing_critical = []
+          for dll in critical_dlls:
+              path = os.path.join(dist_dir, dll)
+              if os.path.isfile(path):
+                  size = os.path.getsize(path)
+                  print(f"  OK   {dll} ({size:,} bytes)")
+              else:
+                  print(f"  MISS {dll}")
+                  missing_critical.append(dll)
+
+          print("\n=== Important DLL Check ===")
+          for dll in important_dlls:
+              path = os.path.join(dist_dir, dll)
+              if os.path.isfile(path):
+                  size = os.path.getsize(path)
+                  print(f"  OK   {dll} ({size:,} bytes)")
+              else:
+                  print(f"  WARN {dll} (not found, may not be needed)")
+
+          # If critical DLLs are missing, copy from system
+          if missing_critical:
+              print(f"\n=== Copying missing critical DLLs ===")
+              search = [
+                  os.path.dirname(sys.executable),
+                  os.path.join(os.environ.get('SYSTEMROOT', r'C:\Windows'), 'System32'),
+              ]
+              import shutil
+              for dll in missing_critical:
+                  for d in search:
+                      src = os.path.join(d, dll)
+                      if os.path.isfile(src):
+                          dst = os.path.join(dist_dir, dll)
+                          shutil.copy2(src, dst)
+                          print(f"  Copied {dll} from {d}")
+                          break
+                  else:
+                      print(f"  ERROR: Could not find {dll} anywhere!")
+                      sys.exit(1)
+
+          print("\nAll critical DLLs present.")
+
+      - name: Copy VC++ Redistributable to dist
+        shell: powershell
+        run: |
+          Copy-Item "vc_redist.x64.exe" -Destination "dist\PhotoSorterAI\vc_redist.x64.exe"
+          Write-Host "VC++ Redist copied to dist"
 
       - name: Create Inno Setup script
         shell: bash
@@ -89,7 +165,7 @@ jobs:
           UninstallDisplayIcon={app}\PhotoSorterAI.exe
           ArchitecturesInstallIn64BitMode=x64compatible
           WizardStyle=modern
-          PrivilegesRequired=lowest
+          PrivilegesRequired=admin
 
           [Files]
           Source: "dist\PhotoSorterAI\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -102,7 +178,16 @@ jobs:
           Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
           [Run]
+          Filename: "{app}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing Visual C++ Runtime..."; Flags: waituntilterminated; Check: NeedsVCRedist
           Filename: "{app}\PhotoSorterAI.exe"; Description: "Launch PhotoSorterAI"; Flags: nowait postinstall skipifsilent
+
+          [Code]
+          function NeedsVCRedist: Boolean;
+          var
+            Version: Cardinal;
+          begin
+            Result := not (RegQueryDWordValue(HKLM, 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'Installed', Version) and (Version = 1));
+          end;
           INNO_EOF
 
       - name: Build installer with Inno Setup

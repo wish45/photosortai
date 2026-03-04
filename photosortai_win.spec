@@ -3,22 +3,74 @@
 
 import os
 import sys
+import glob
 from pathlib import Path
 
 block_cipher = None
 
-# InsightFace 모델 경로 — CI에서는 프로젝트 내 insightface_models/, 로컬은 ~/.insightface
+# ── MSVC Runtime DLL collection ──────────────────────────────────────────
+# Clean Windows PCs may not have these. Bundle them from the build machine.
+_msvc_dll_names = [
+    'msvcp140.dll',
+    'msvcp140_1.dll',
+    'msvcp140_2.dll',
+    'vcruntime140.dll',
+    'vcruntime140_1.dll',
+    'concrt140.dll',
+    'vcomp140.dll',
+]
+
+msvc_binaries = []
+_search_paths = [
+    os.path.dirname(sys.executable),                                       # Python dir
+    os.path.join(os.environ.get('SYSTEMROOT', r'C:\Windows'), 'System32'), # System32
+    os.path.join(os.environ.get('SYSTEMROOT', r'C:\Windows'), 'SysWOW64'),
+]
+
+# Also search in Visual Studio paths
+_vs_paths = glob.glob(r'C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\*.CRT')
+_vs_paths += glob.glob(r'C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\*.CRT')
+_search_paths.extend(_vs_paths)
+
+for dll_name in _msvc_dll_names:
+    for search_dir in _search_paths:
+        dll_path = os.path.join(search_dir, dll_name)
+        if os.path.isfile(dll_path):
+            msvc_binaries.append((dll_path, '.'))
+            print(f"  [MSVC] Found {dll_name} -> {dll_path}")
+            break
+    else:
+        print(f"  [MSVC] WARNING: {dll_name} not found (may not be needed)")
+
+# ── UCRT (Universal C Runtime) DLLs ─────────────────────────────────────
+# Needed on older Windows (pre-10). Usually in Python's DLLs directory.
+_ucrt_dir = os.path.join(os.path.dirname(sys.executable), 'DLLs')
+ucrt_binaries = []
+if os.path.isdir(_ucrt_dir):
+    for dll in glob.glob(os.path.join(_ucrt_dir, 'api-ms-win-*.dll')):
+        ucrt_binaries.append((dll, '.'))
+    for dll in glob.glob(os.path.join(_ucrt_dir, 'ucrtbase*.dll')):
+        ucrt_binaries.append((dll, '.'))
+
+# Also check Windows SDK UCRT path
+_ucrt_sdk = glob.glob(r'C:\Program Files (x86)\Windows Kits\10\Redist\*\ucrt\DLLs\x64')
+for ucrt_path in _ucrt_sdk:
+    for dll in glob.glob(os.path.join(ucrt_path, '*.dll')):
+        ucrt_binaries.append((dll, '.'))
+
+print(f"  [UCRT] Collected {len(ucrt_binaries)} UCRT DLLs")
+
+# ── InsightFace model path ───────────────────────────────────────────────
 _local_models = os.path.join(SPECPATH, 'insightface_models')
 insightface_models = _local_models if os.path.isdir(_local_models) else os.path.join(Path.home(), '.insightface')
 
+# ── Analysis ─────────────────────────────────────────────────────────────
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=msvc_binaries + ucrt_binaries,
     datas=[
-        # InsightFace 모델 번들
         (insightface_models, 'insightface'),
-        # 아이콘
         ('assets/icon.ico', 'assets'),
     ],
     hiddenimports=[
@@ -57,14 +109,12 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['rthook_dll_path.py'],
     excludes=[
-        # Unused insightface submodules with broken Cython deps
         'insightface.thirdparty.face3d',
         'insightface.thirdparty.face3d.mesh',
         'insightface.thirdparty.face3d.mesh.cython',
         'insightface.thirdparty.face3d.mesh.cython.mesh_core_cython',
-        # Unused heavy packages
         'tkinter',
         'matplotlib',
         'IPython',
@@ -89,7 +139,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,      # GUI 앱이므로 콘솔 창 숨김
+    console=False,
     icon='assets/icon.ico',
     disable_windowed_traceback=False,
     target_arch=None,
